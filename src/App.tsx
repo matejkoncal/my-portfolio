@@ -1,9 +1,6 @@
-import './App.css'
+import PongGame from "./PongGame";
+import "./App.css";
 
-function App() {
-  return (
-    <h1>Matej Koncal</h1>
-  )
+export default function App() {
+  return <PongGame />;
 }
-
-export default App
