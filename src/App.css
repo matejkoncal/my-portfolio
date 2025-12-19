@@ -1,82 +1,107 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-}
-
-.app-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 20px;
-}
-
-.status-bar {
-  font-size: 1.2em;
-  font-weight: bold;
-  color: #646cff;
-}
-
-.setup-panel {
-  background: #1a1a1a;
-  padding: 20px;
-  border-radius: 8px;
-  border: 1px solid #333;
-  max-width: 600px;
+.app-shell {
   width: 100%;
-}
-
-.step {
-  margin-bottom: 20px;
-  text-align: left;
-}
-
-.link-box, .input-box {
+  max-width: 1220px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
   display: flex;
+  flex-direction: column;
+  gap: 28px;
+  color: #eaf2ff;
+}
+
+.app-shell--immersive {
+  max-width: 100%;
+  padding: 0;
+}
+
+.hero {
+  display: flex;
+  gap: 16px;
+  padding: 32px;
+  border-radius: 18px;
+  background: linear-gradient(130deg, rgba(124, 241, 255, 0.12), rgba(46, 65, 255, 0.1));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.4);
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(30px, 4.2vw, 48px);
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
   gap: 10px;
-  margin-top: 5px;
 }
 
-input {
-  flex: 1;
-  padding: 8px;
-  border-radius: 4px;
-  border: 1px solid #444;
-  background: #222;
-  color: #fff;
+.spark {
+  color: #7cf1ff;
 }
 
-button {
-  padding: 8px 16px;
-  border-radius: 4px;
-  border: 1px solid transparent;
-  background-color: #646cff;
-  color: white;
+.hero p {
+  margin: 0;
+  max-width: 780px;
+  color: rgba(234, 242, 255, 0.9);
+  font-size: 16px;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.hero-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card-column {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.badge-row {
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.eyebrow {
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(232, 240, 255, 0.65);
+}
+
+.game-card {
   cursor: pointer;
-  font-weight: bold;
+  background: linear-gradient(160deg, #0c1326, #0b1424);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 
-button:hover {
-  background-color: #535bf2;
+.game-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(124, 241, 255, 0.6);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
 
-.btn-primary {
-  font-size: 1.2em;
-  padding: 12px 24px;
-}
-
-canvas {
-  background: #222;
-  box-shadow: 0 0 20px rgba(0,0,0,0.5);
-}
-
-.instructions {
-  color: #888;
+.game-card .card-copy {
   margin-top: 10px;
+  color: rgba(234, 242, 255, 0.9);
+}
+
+.badges {
+  margin-top: 12px;
+}
+
+.game-surface {
+  width: 100%;
 }

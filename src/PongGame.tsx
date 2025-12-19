@@ -1,35 +1,43 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Application, Graphics, Sprite, Texture, RenderTexture } from "pixi.js";
 import pako from "pako";
 import {
+  Alert,
   Box,
   Button,
-  TextField,
-  Typography,
-  Paper,
-  Stack,
-  Alert,
+  Chip,
   CircularProgress,
   Dialog,
-  DialogTitle,
-  DialogContent,
   DialogActions,
+  DialogContent,
+  DialogTitle,
+  Paper,
+  Slider,
   Snackbar,
+  Stack,
+  TextField,
+  Typography,
 } from "@mui/material";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import SportsEsportsIcon from "@mui/icons-material/SportsEsports";
+import LogoutIcon from "@mui/icons-material/Logout";
 
-// Game constants
+type PongGameProps = {
+  onExitToMenu?: () => void;
+  onImmersiveChange?: (value: boolean) => void;
+};
+
+type GamePhase = "idle" | "lobby" | "countdown" | "playing";
+
 const CANVAS_WIDTH = 800;
-const CANVAS_HEIGHT = 600;
+const CANVAS_HEIGHT = 560;
 const PADDLE_WIDTH = 60;
-const PADDLE_HEIGHT = 80;
-const BALL_SIZE = 15;
-const BALL_SPEED = 8;
+const PADDLE_HEIGHT = 88;
+const BALL_SIZE = 16;
+const DEFAULT_BALL_SPEED = 5;
 const PADDLE_SPEED = 8;
 
-// WebRTC configuration
 const rtcConfig: RTCConfiguration = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -37,7 +45,6 @@ const rtcConfig: RTCConfiguration = {
   ],
 };
 
-// Encoding utilities
 function encodeForURL(data: object): string {
   const jsonStr = JSON.stringify(data);
   const compressed = pako.gzip(jsonStr);
@@ -63,28 +70,40 @@ interface GameState {
   score2: number;
 }
 
-export default function PongGame() {
+export default function PongGame({
+  onExitToMenu,
+  onImmersiveChange,
+}: PongGameProps) {
   const gameContainerRef = useRef<HTMLDivElement>(null);
   const pixiAppRef = useRef<Application | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
 
-  // Game objects refs
   const paddle1Ref = useRef<Sprite | null>(null);
   const paddle2Ref = useRef<Sprite | null>(null);
   const ballRef = useRef<Graphics | null>(null);
 
   const [role, setRole] = useState<"none" | "host" | "guest">("none");
   const roleRef = useRef<"none" | "host" | "guest">("none");
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState("Pripravené na vytvorenie hry");
   const [inviteLink, setInviteLink] = useState("");
   const [answerCode, setAnswerCode] = useState("");
   const [answerInput, setAnswerInput] = useState("");
   const [connected, setConnected] = useState(false);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
+  const [scores, setScores] = useState({ score1: 0, score2: 0 });
+  const scoresRef = useRef(scores);
+  const [gamePhase, setGamePhase] = useState<GamePhase>("idle");
+  const gamePhaseRef = useRef<GamePhase>("idle");
+  const [countdown, setCountdown] = useState(3);
+  const countdownTimerRef = useRef<number | null>(null);
+  const [ballSpeed, setBallSpeed] = useState(DEFAULT_BALL_SPEED);
+  const ballSpeedRef = useRef(DEFAULT_BALL_SPEED);
 
-  // Webcam states
+  const keysRef = useRef<Set<string>>(new Set());
+  const gameLoopRef = useRef<number | null>(null);
+
   const [webcamDialogOpen, setWebcamDialogOpen] = useState(false);
   const [faceCapturing, setFaceCapturing] = useState(false);
   const [hostFaceImage, setHostFaceImage] = useState<string | null>(null);
@@ -94,13 +113,12 @@ export default function PongGame() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
 
-  // Game state
   const gameStateRef = useRef<GameState>({
     ball: {
       x: CANVAS_WIDTH / 2,
       y: CANVAS_HEIGHT / 2,
-      vx: BALL_SPEED,
-      vy: BALL_SPEED / 2,
+      vx: DEFAULT_BALL_SPEED,
+      vy: DEFAULT_BALL_SPEED / 2,
     },
     paddle1Y: CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2,
     paddle2Y: CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2,
@@ -108,31 +126,22 @@ export default function PongGame() {
     score2: 0,
   });
 
-  const keysRef = useRef<Set<string>>(new Set());
-  const gameLoopRef = useRef<number | null>(null);
-
-  // Show snackbar notification
   const showSnackbar = (message: string) => {
     setSnackbarMessage(message);
     setSnackbarOpen(true);
   };
 
-  // Create face texture from image data
   const createFaceTexture = useCallback(
     async (imageData: string): Promise<Texture> => {
       return new Promise((resolve) => {
         const img = new Image();
-        img.onload = () => {
-          const texture = Texture.from(img);
-          resolve(texture);
-        };
+        img.onload = () => resolve(Texture.from(img));
         img.src = imageData;
       });
     },
     []
   );
 
-  // Update paddle texture
   const updatePaddleTexture = useCallback(
     async (paddle: Sprite, imageData: string) => {
       const texture = await createFaceTexture(imageData);
@@ -143,7 +152,34 @@ export default function PongGame() {
     [createFaceTexture]
   );
 
-  // Initialize PixiJS
+  const resetBall = (direction: 1 | -1 = 1) => {
+    gameStateRef.current.ball = {
+      x: CANVAS_WIDTH / 2,
+      y: CANVAS_HEIGHT / 2,
+      vx: direction * ballSpeedRef.current,
+      vy: (ballSpeedRef.current / 2) * (Math.random() > 0.5 ? 1 : -1),
+    };
+  };
+
+  const resetState = () => {
+    gameStateRef.current = {
+      ball: {
+        x: CANVAS_WIDTH / 2,
+        y: CANVAS_HEIGHT / 2,
+        vx: ballSpeedRef.current,
+        vy: ballSpeedRef.current / 2,
+      },
+      paddle1Y: CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2,
+      paddle2Y: CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2,
+      score1: 0,
+      score2: 0,
+    };
+    setScores({ score1: 0, score2: 0 });
+    scoresRef.current = { score1: 0, score2: 0 };
+    setCountdown(3);
+    setStatus("Pripravené na vytvorenie hry");
+  };
+
   const initPixi = useCallback(async () => {
     if (!gameContainerRef.current || pixiAppRef.current) return;
 
@@ -151,17 +187,17 @@ export default function PongGame() {
     await app.init({
       width: CANVAS_WIDTH,
       height: CANVAS_HEIGHT,
-      backgroundColor: 0x1a1a2e,
+      backgroundColor: 0x0a0f1c,
       antialias: true,
     });
 
+    gameContainerRef.current.innerHTML = "";
     gameContainerRef.current.appendChild(app.canvas);
     pixiAppRef.current = app;
 
-    // Create paddle textures (default rectangles)
     const createDefaultPaddleTexture = (): Texture => {
       const graphics = new Graphics();
-      graphics.rect(0, 0, PADDLE_WIDTH, PADDLE_HEIGHT);
+      graphics.roundRect(0, 0, PADDLE_WIDTH, PADDLE_HEIGHT, 12);
       graphics.fill(0xffffff);
       const renderTexture = RenderTexture.create({
         width: PADDLE_WIDTH,
@@ -171,21 +207,18 @@ export default function PongGame() {
       return renderTexture;
     };
 
-    // Create paddle 1 (left)
     const paddle1 = new Sprite(createDefaultPaddleTexture());
     paddle1.x = 20;
     paddle1.y = gameStateRef.current.paddle1Y;
     app.stage.addChild(paddle1);
     paddle1Ref.current = paddle1;
 
-    // Create paddle 2 (right)
     const paddle2 = new Sprite(createDefaultPaddleTexture());
     paddle2.x = CANVAS_WIDTH - 20 - PADDLE_WIDTH;
     paddle2.y = gameStateRef.current.paddle2Y;
     app.stage.addChild(paddle2);
     paddle2Ref.current = paddle2;
 
-    // Create ball
     const ball = new Graphics();
     ball.circle(0, 0, BALL_SIZE / 2);
     ball.fill(0xffffff);
@@ -194,25 +227,21 @@ export default function PongGame() {
     app.stage.addChild(ball);
     ballRef.current = ball;
 
-    // Create center line
     const centerLine = new Graphics();
-    for (let y = 0; y < CANVAS_HEIGHT; y += 30) {
-      centerLine.rect(CANVAS_WIDTH / 2 - 2, y, 4, 15);
-      centerLine.fill(0x444444);
+    for (let y = 0; y < CANVAS_HEIGHT; y += 28) {
+      centerLine.rect(CANVAS_WIDTH / 2 - 2, y, 4, 12);
+      centerLine.fill(0x1f2d3d);
     }
     app.stage.addChild(centerLine);
   }, []);
 
-  // Webcam capture
   const openWebcamDialog = async () => {
     setWebcamDialogOpen(true);
     setFaceCapturing(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       webcamStreamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
+      if (videoRef.current) videoRef.current.srcObject = stream;
       setFaceCapturing(false);
     } catch (error) {
       console.error("Webcam error:", error);
@@ -231,41 +260,33 @@ export default function PongGame() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Draw video frame to canvas (cropped to center square)
     const video = videoRef.current;
     const size = Math.min(video.videoWidth, video.videoHeight);
     const sx = (video.videoWidth - size) / 2;
     const sy = (video.videoHeight - size) / 2;
-
     ctx.drawImage(video, sx, sy, size, size, 0, 0, canvas.width, canvas.height);
     const imageData = canvas.toDataURL("image/png");
 
-    if (role === "host" || role === "none") {
+    if (roleRef.current === "host" || roleRef.current === "none") {
       setHostFaceImage(imageData);
       hostFaceImageRef.current = imageData;
-      // Send to guest if connected
       if (dataChannelRef.current?.readyState === "open") {
         dataChannelRef.current.send(
           JSON.stringify({ type: "hostFace", data: imageData })
         );
       }
-      // Update paddle texture
-      if (paddle1Ref.current) {
+      if (paddle1Ref.current)
         updatePaddleTexture(paddle1Ref.current, imageData);
-      }
     } else {
       setGuestFaceImage(imageData);
       guestFaceImageRef.current = imageData;
-      // Send to host if connected
       if (dataChannelRef.current?.readyState === "open") {
         dataChannelRef.current.send(
           JSON.stringify({ type: "guestFace", data: imageData })
         );
       }
-      // Update paddle texture
-      if (paddle2Ref.current) {
+      if (paddle2Ref.current)
         updatePaddleTexture(paddle2Ref.current, imageData);
-      }
     }
 
     closeWebcamDialog();
@@ -280,20 +301,84 @@ export default function PongGame() {
     setWebcamDialogOpen(false);
   };
 
-  // Setup data channel - uses refs to avoid stale closures
+  const broadcastSettings = (speed: number) => {
+    if (dataChannelRef.current?.readyState === "open") {
+      dataChannelRef.current.send(
+        JSON.stringify({ type: "settings", ballSpeed: speed })
+      );
+    }
+  };
+
+  const startCountdown = useCallback((startFrom = 3) => {
+    if (countdownTimerRef.current) {
+      clearTimeout(countdownTimerRef.current);
+    }
+    setCountdown(startFrom);
+    setGamePhase("countdown");
+    gamePhaseRef.current = "countdown";
+
+    const tick = (value: number) => {
+      setCountdown(value);
+      if (
+        roleRef.current === "host" &&
+        dataChannelRef.current?.readyState === "open"
+      ) {
+        dataChannelRef.current.send(
+          JSON.stringify({
+            type: "phase",
+            phase: "countdown",
+            countdown: value,
+          })
+        );
+      }
+      if (value <= 0) {
+        setGamePhase("playing");
+        gamePhaseRef.current = "playing";
+        if (
+          roleRef.current === "host" &&
+          dataChannelRef.current?.readyState === "open"
+        ) {
+          dataChannelRef.current.send(
+            JSON.stringify({ type: "phase", phase: "playing" })
+          );
+        }
+        return;
+      }
+      countdownTimerRef.current = window.setTimeout(
+        () => tick(value - 1),
+        1000
+      );
+    };
+
+    tick(startFrom);
+  }, []);
+
   const setupDataChannel = useCallback(
     (channel: RTCDataChannel) => {
       dataChannelRef.current = channel;
 
       channel.onopen = () => {
         setConnected(true);
-        setStatus("Pripojené! Hra začína...");
-        // Send face image to peer using refs for current values
-        if (roleRef.current === "host" && hostFaceImageRef.current) {
+        setStatus("Pripojené!");
+        setGamePhase("lobby");
+        gamePhaseRef.current = "lobby";
+        if (roleRef.current === "host") {
+          if (hostFaceImageRef.current) {
+            channel.send(
+              JSON.stringify({
+                type: "hostFace",
+                data: hostFaceImageRef.current,
+              })
+            );
+          }
           channel.send(
-            JSON.stringify({ type: "hostFace", data: hostFaceImageRef.current })
+            JSON.stringify({
+              type: "settings",
+              ballSpeed: ballSpeedRef.current,
+            })
           );
-        } else if (roleRef.current === "guest" && guestFaceImageRef.current) {
+          startCountdown();
+        } else if (guestFaceImageRef.current) {
           channel.send(
             JSON.stringify({
               type: "guestFace",
@@ -306,6 +391,8 @@ export default function PongGame() {
       channel.onclose = () => {
         setConnected(false);
         setStatus("Spojenie ukončené");
+        setGamePhase("idle");
+        gamePhaseRef.current = "idle";
       };
 
       channel.onmessage = async (event) => {
@@ -313,6 +400,14 @@ export default function PongGame() {
 
         if (message.type === "gameState" && roleRef.current === "guest") {
           gameStateRef.current = message.state;
+          const { score1, score2 } = message.state;
+          if (
+            score1 !== scoresRef.current.score1 ||
+            score2 !== scoresRef.current.score2
+          ) {
+            scoresRef.current = { score1, score2 };
+            setScores({ score1, score2 });
+          }
         } else if (message.type === "input" && roleRef.current === "host") {
           const paddleY = gameStateRef.current.paddle2Y;
           if (message.direction === "up") {
@@ -326,44 +421,44 @@ export default function PongGame() {
         } else if (message.type === "hostFace") {
           setHostFaceImage(message.data);
           hostFaceImageRef.current = message.data;
-          if (paddle1Ref.current) {
+          if (paddle1Ref.current)
             await updatePaddleTexture(paddle1Ref.current, message.data);
-          }
         } else if (message.type === "guestFace") {
           setGuestFaceImage(message.data);
           guestFaceImageRef.current = message.data;
-          if (paddle2Ref.current) {
+          if (paddle2Ref.current)
             await updatePaddleTexture(paddle2Ref.current, message.data);
+        } else if (message.type === "phase") {
+          if (message.phase === "countdown") {
+            setGamePhase("countdown");
+            gamePhaseRef.current = "countdown";
+            setCountdown(message.countdown ?? 3);
+          } else if (message.phase === "playing") {
+            setGamePhase("playing");
+            gamePhaseRef.current = "playing";
           }
+        } else if (
+          message.type === "settings" &&
+          typeof message.ballSpeed === "number"
+        ) {
+          setBallSpeed(message.ballSpeed);
+          ballSpeedRef.current = message.ballSpeed;
         }
       };
     },
-    [updatePaddleTexture]
+    [startCountdown, updatePaddleTexture]
   );
 
-  // Wait for ICE gathering
   const waitForICE = (pc: RTCPeerConnection): Promise<void> => {
     return new Promise((resolve) => {
       let candidateCount = 0;
-      const timeout = setTimeout(() => {
-        console.log(
-          "ICE gathering timeout, proceeding with",
-          candidateCount,
-          "candidates"
-        );
-        resolve();
-      }, 3000);
+      const timeout = setTimeout(() => resolve(), 3000);
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           candidateCount++;
         } else {
           clearTimeout(timeout);
-          console.log(
-            "ICE gathering complete with",
-            candidateCount,
-            "candidates"
-          );
           resolve();
         }
       };
@@ -375,10 +470,11 @@ export default function PongGame() {
     });
   };
 
-  // Create game (host)
   const createGame = async () => {
     setRole("host");
     roleRef.current = "host";
+    setGamePhase("lobby");
+    gamePhaseRef.current = "lobby";
     setStatus("Vytváram hru...");
 
     const pc = new RTCPeerConnection(rtcConfig);
@@ -404,19 +500,18 @@ export default function PongGame() {
     setStatus("Invite link vygenerovaný! Pošli ho kamarátovi.");
   };
 
-  // Handle incoming offer (guest)
   const handleIncomingOffer = useCallback(
     async (offerData: RTCSessionDescriptionInit) => {
       setRole("guest");
       roleRef.current = "guest";
+      setGamePhase("lobby");
+      gamePhaseRef.current = "lobby";
       setStatus("Aplikujem ponuku od hostiteľa...");
 
       const pc = new RTCPeerConnection(rtcConfig);
       peerConnectionRef.current = pc;
 
-      pc.ondatachannel = (event) => {
-        setupDataChannel(event.channel);
-      };
+      pc.ondatachannel = (event) => setupDataChannel(event.channel);
 
       await pc.setRemoteDescription(new RTCSessionDescription(offerData));
 
@@ -438,18 +533,13 @@ export default function PongGame() {
     [setupDataChannel]
   );
 
-  // Process answer (host)
   const processAnswer = async () => {
     if (!peerConnectionRef.current || !answerInput.trim()) return;
-
     setStatus("Spracovávam odpoveď...");
 
     try {
       let encoded = answerInput.trim();
-      // Handle full URL or just code
-      if (encoded.includes("?d=")) {
-        encoded = encoded.split("?d=")[1];
-      }
+      if (encoded.includes("?d=")) encoded = encoded.split("?d=")[1];
 
       const answerData = decodeFromURL(encoded) as RTCSessionDescriptionInit;
       await peerConnectionRef.current.setRemoteDescription(
@@ -462,7 +552,6 @@ export default function PongGame() {
     }
   };
 
-  // Copy to clipboard
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -472,13 +561,11 @@ export default function PongGame() {
     }
   };
 
-  // Game loop - uses roleRef to avoid stale closures
   const updateGame = useCallback(() => {
     const state = gameStateRef.current;
     const currentRole = roleRef.current;
 
     if (currentRole === "host") {
-      // Update paddle 1 (host)
       if (keysRef.current.has("ArrowUp") || keysRef.current.has("w")) {
         state.paddle1Y = Math.max(0, state.paddle1Y - PADDLE_SPEED);
       }
@@ -489,71 +576,63 @@ export default function PongGame() {
         );
       }
 
-      // Update ball
-      state.ball.x += state.ball.vx;
-      state.ball.y += state.ball.vy;
+      if (gamePhaseRef.current === "playing") {
+        state.ball.x += state.ball.vx;
+        state.ball.y += state.ball.vy;
 
-      // Ball collision with top/bottom
-      if (
-        state.ball.y <= BALL_SIZE / 2 ||
-        state.ball.y >= CANVAS_HEIGHT - BALL_SIZE / 2
-      ) {
-        state.ball.vy *= -1;
+        if (
+          state.ball.y <= BALL_SIZE / 2 ||
+          state.ball.y >= CANVAS_HEIGHT - BALL_SIZE / 2
+        ) {
+          state.ball.vy *= -1;
+        }
+
+        if (
+          state.ball.x - BALL_SIZE / 2 <= 20 + PADDLE_WIDTH &&
+          state.ball.x - BALL_SIZE / 2 >= 20 &&
+          state.ball.y >= state.paddle1Y &&
+          state.ball.y <= state.paddle1Y + PADDLE_HEIGHT &&
+          state.ball.vx < 0
+        ) {
+          state.ball.vx = Math.abs(state.ball.vx);
+          state.ball.x = 20 + PADDLE_WIDTH + BALL_SIZE / 2;
+        }
+
+        if (
+          state.ball.x + BALL_SIZE / 2 >= CANVAS_WIDTH - 20 - PADDLE_WIDTH &&
+          state.ball.x + BALL_SIZE / 2 <= CANVAS_WIDTH - 20 &&
+          state.ball.y >= state.paddle2Y &&
+          state.ball.y <= state.paddle2Y + PADDLE_HEIGHT &&
+          state.ball.vx > 0
+        ) {
+          state.ball.vx = -Math.abs(state.ball.vx);
+          state.ball.x = CANVAS_WIDTH - 20 - PADDLE_WIDTH - BALL_SIZE / 2;
+        }
+
+        if (state.ball.x < 0) {
+          state.score2++;
+          resetBall(1);
+        }
+        if (state.ball.x > CANVAS_WIDTH) {
+          state.score1++;
+          resetBall(-1);
+        }
+
+        if (
+          state.score1 !== scoresRef.current.score1 ||
+          state.score2 !== scoresRef.current.score2
+        ) {
+          scoresRef.current = { score1: state.score1, score2: state.score2 };
+          setScores(scoresRef.current);
+        }
       }
 
-      // Ball collision with paddles
-      // Paddle 1
-      if (
-        state.ball.x - BALL_SIZE / 2 <= 20 + PADDLE_WIDTH &&
-        state.ball.x - BALL_SIZE / 2 >= 20 &&
-        state.ball.y >= state.paddle1Y &&
-        state.ball.y <= state.paddle1Y + PADDLE_HEIGHT &&
-        state.ball.vx < 0
-      ) {
-        state.ball.vx *= -1;
-        state.ball.x = 20 + PADDLE_WIDTH + BALL_SIZE / 2;
-      }
-
-      // Paddle 2
-      if (
-        state.ball.x + BALL_SIZE / 2 >= CANVAS_WIDTH - 20 - PADDLE_WIDTH &&
-        state.ball.x + BALL_SIZE / 2 <= CANVAS_WIDTH - 20 &&
-        state.ball.y >= state.paddle2Y &&
-        state.ball.y <= state.paddle2Y + PADDLE_HEIGHT &&
-        state.ball.vx > 0
-      ) {
-        state.ball.vx *= -1;
-        state.ball.x = CANVAS_WIDTH - 20 - PADDLE_WIDTH - BALL_SIZE / 2;
-      }
-
-      // Score
-      if (state.ball.x < 0) {
-        state.score2++;
-        state.ball = {
-          x: CANVAS_WIDTH / 2,
-          y: CANVAS_HEIGHT / 2,
-          vx: BALL_SPEED,
-          vy: BALL_SPEED / 2,
-        };
-      }
-      if (state.ball.x > CANVAS_WIDTH) {
-        state.score1++;
-        state.ball = {
-          x: CANVAS_WIDTH / 2,
-          y: CANVAS_HEIGHT / 2,
-          vx: -BALL_SPEED,
-          vy: BALL_SPEED / 2,
-        };
-      }
-
-      // Send state to guest
       if (dataChannelRef.current?.readyState === "open") {
         dataChannelRef.current.send(
           JSON.stringify({ type: "gameState", state })
         );
       }
     } else if (currentRole === "guest") {
-      // Send input to host
       if (dataChannelRef.current?.readyState === "open") {
         if (keysRef.current.has("ArrowUp") || keysRef.current.has("w")) {
           dataChannelRef.current.send(
@@ -568,13 +647,8 @@ export default function PongGame() {
       }
     }
 
-    // Render
-    if (paddle1Ref.current) {
-      paddle1Ref.current.y = state.paddle1Y;
-    }
-    if (paddle2Ref.current) {
-      paddle2Ref.current.y = state.paddle2Y;
-    }
+    if (paddle1Ref.current) paddle1Ref.current.y = state.paddle1Y;
+    if (paddle2Ref.current) paddle2Ref.current.y = state.paddle2Y;
     if (ballRef.current) {
       ballRef.current.x = state.ball.x;
       ballRef.current.y = state.ball.y;
@@ -583,23 +657,46 @@ export default function PongGame() {
     gameLoopRef.current = requestAnimationFrame(updateGame);
   }, []);
 
-  // Start game loop
+  const stopGameLoop = () => {
+    if (gameLoopRef.current) cancelAnimationFrame(gameLoopRef.current);
+  };
+
+  const endSession = () => {
+    stopGameLoop();
+    setConnected(false);
+    setInviteLink("");
+    setAnswerCode("");
+    setAnswerInput("");
+    setRole("none");
+    roleRef.current = "none";
+    setGamePhase("idle");
+    gamePhaseRef.current = "idle";
+    resetState();
+
+    if (dataChannelRef.current) dataChannelRef.current.close();
+    if (peerConnectionRef.current) peerConnectionRef.current.close();
+    dataChannelRef.current = null;
+    peerConnectionRef.current = null;
+
+    if (pixiAppRef.current) {
+      pixiAppRef.current.stage.removeChildren();
+      pixiAppRef.current.destroy(true);
+      pixiAppRef.current = null;
+    }
+    initPixi();
+
+    if (onExitToMenu) onExitToMenu();
+  };
+
   useEffect(() => {
     if (connected) {
       gameLoopRef.current = requestAnimationFrame(updateGame);
     }
-
-    return () => {
-      if (gameLoopRef.current) {
-        cancelAnimationFrame(gameLoopRef.current);
-      }
-    };
+    return () => stopGameLoop();
   }, [connected, updateGame]);
 
-  // Initialize PixiJS on mount
   useEffect(() => {
     initPixi();
-
     return () => {
       if (pixiAppRef.current) {
         pixiAppRef.current.destroy(true);
@@ -608,7 +705,6 @@ export default function PongGame() {
     };
   }, [initPixi]);
 
-  // Check URL for offer
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const data = params.get("d");
@@ -623,13 +719,13 @@ export default function PongGame() {
     }
   }, [role, handleIncomingOffer]);
 
-  // Keyboard handlers
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "w", "s"].includes(e.key)) {
         e.preventDefault();
         keysRef.current.add(e.key);
       }
+      if (e.key === "Escape") endSession();
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -638,229 +734,389 @@ export default function PongGame() {
 
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
-
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
   }, []);
 
+  useEffect(() => {
+    if (
+      webcamDialogOpen &&
+      !faceCapturing &&
+      videoRef.current &&
+      webcamStreamRef.current
+    ) {
+      videoRef.current.srcObject = webcamStreamRef.current;
+    }
+  }, [webcamDialogOpen, faceCapturing]);
+
+  useEffect(() => {
+    ballSpeedRef.current = ballSpeed;
+    if (roleRef.current === "host") {
+      const direction = Math.sign(gameStateRef.current.ball.vx) || 1;
+      gameStateRef.current.ball.vx = direction * ballSpeed;
+      gameStateRef.current.ball.vy =
+        (ballSpeed / 2) * Math.sign(gameStateRef.current.ball.vy || 1);
+      broadcastSettings(ballSpeed);
+    }
+  }, [ballSpeed]);
+
+  useEffect(() => {
+    const immersive =
+      connected || gamePhase === "countdown" || gamePhase === "playing";
+    onImmersiveChange?.(immersive);
+  }, [connected, gamePhase, onImmersiveChange]);
+
+  const isImmersive =
+    connected || gamePhase === "countdown" || gamePhase === "playing";
+
   return (
     <Box
+      className="pong-wrapper"
       sx={{
-        minHeight: "100vh",
-        bgcolor: "#0f0f23",
-        color: "white",
+        width: "100%",
+        minHeight: isImmersive ? "100vh" : "auto",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        py: 4,
+        gap: 2,
+        py: isImmersive ? 0 : 2,
       }}
     >
-      <Typography
-        variant="h3"
-        component="h1"
-        gutterBottom
-        sx={{ color: "#00d9ff" }}
-      >
-        <SportsEsportsIcon
-          sx={{ fontSize: 40, mr: 1, verticalAlign: "middle" }}
-        />
-        WebRTC Pong
-      </Typography>
-
-      {/* Game Canvas */}
       <Paper
-        elevation={8}
+        elevation={12}
         sx={{
-          mb: 3,
-          borderRadius: 2,
+          position: "relative",
+          borderRadius: isImmersive ? 0 : 3,
           overflow: "hidden",
-          border: "2px solid #00d9ff",
+          border: "1px solid rgba(124,241,255,0.25)",
+          background:
+            "radial-gradient(circle at 10% 20%, rgba(124,241,255,0.07), transparent 35%), #050914",
         }}
       >
-        <Box ref={gameContainerRef} />
-      </Paper>
+        <Box
+          sx={{
+            p: isImmersive ? 0 : 2.5,
+            display: "flex",
+            flexDirection: "column",
+            gap: 1,
+          }}
+        >
+          <Box
+            sx={{
+              position: "relative",
+              borderRadius: isImmersive ? 0 : 2,
+              overflow: "hidden",
+              border: "1px solid rgba(255,255,255,0.08)",
+              boxShadow: "0 25px 70px rgba(0,0,0,0.45)",
+            }}
+          >
+            <Box ref={gameContainerRef} sx={{ background: "#050914" }} />
 
-      {/* Score Display */}
-      {connected && (
-        <Typography variant="h4" sx={{ mb: 2, fontFamily: "monospace" }}>
-          {gameStateRef.current.score1} : {gameStateRef.current.score2}
-        </Typography>
-      )}
+            <Box
+              sx={{
+                position: "absolute",
+                top: 12,
+                left: 0,
+                right: 0,
+                display: "flex",
+                justifyContent: "center",
+                pointerEvents: "none",
+              }}
+            >
+              <Chip
+                label={`${scores.score1} : ${scores.score2}`}
+                sx={{
+                  bgcolor: "rgba(0,0,0,0.55)",
+                  color: "#f1f5ff",
+                  fontSize: 18,
+                  px: 2,
+                  py: 1,
+                  backdropFilter: "blur(6px)",
+                  pointerEvents: "none",
+                }}
+              />
+            </Box>
 
-      {/* Status */}
-      {status && (
-        <Alert severity="info" sx={{ mb: 2, maxWidth: 600 }}>
-          {status}
-        </Alert>
-      )}
-
-      {/* Controls */}
-      <Paper sx={{ p: 3, bgcolor: "#1a1a3e", maxWidth: 600, width: "100%" }}>
-        {role === "none" && (
-          <Stack spacing={2}>
-            <Typography variant="h6" textAlign="center">
-              Začni novú hru
-            </Typography>
-            <Stack direction="row" spacing={2} justifyContent="center">
+            {isImmersive && (
               <Button
                 variant="contained"
-                color="primary"
-                onClick={createGame}
-                startIcon={<SportsEsportsIcon />}
+                color="error"
+                startIcon={<LogoutIcon />}
+                onClick={endSession}
+                sx={{
+                  position: "absolute",
+                  top: 12,
+                  right: 12,
+                  zIndex: 2,
+                  backdropFilter: "blur(6px)",
+                }}
               >
-                Vytvoriť hru (Host)
+                Ukončiť
               </Button>
-              <Button
-                variant="outlined"
-                color="secondary"
-                onClick={openWebcamDialog}
-                startIcon={<VideocamIcon />}
+            )}
+
+            {gamePhase === "countdown" && (
+              <Box
+                sx={{
+                  position: "absolute",
+                  inset: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "rgba(0,0,0,0.45)",
+                  backdropFilter: "blur(4px)",
+                }}
               >
-                Odfotiť tvár
-              </Button>
-            </Stack>
-            {hostFaceImage && (
-              <Box textAlign="center">
-                <Typography variant="body2" color="success.main">
-                  ✓ Tvár zachytená
+                <Typography
+                  variant="h2"
+                  sx={{ color: "#7cf1ff", fontWeight: 800 }}
+                >
+                  {countdown}
                 </Typography>
               </Box>
             )}
-          </Stack>
-        )}
+          </Box>
 
-        {role === "host" && !connected && (
-          <Stack spacing={2}>
-            {inviteLink && (
-              <>
-                <Typography variant="body1">
-                  Pošli tento link kamarátovi:
-                </Typography>
-                <TextField
-                  fullWidth
-                  value={inviteLink}
-                  InputProps={{
-                    readOnly: true,
-                    sx: {
-                      bgcolor: "#0f0f23",
-                      fontFamily: "monospace",
-                      fontSize: "0.75rem",
-                    },
-                  }}
-                />
-                <Button
-                  variant="contained"
-                  onClick={() => copyToClipboard(inviteLink)}
-                  startIcon={<ContentCopyIcon />}
-                >
-                  Kopírovať link
-                </Button>
+          {status && !isImmersive && (
+            <Alert severity="info" sx={{ mt: 1 }}>
+              {status}
+            </Alert>
+          )}
+        </Box>
+      </Paper>
 
-                <Typography variant="body1" sx={{ mt: 2 }}>
-                  Vlož kód odpovede od kamaráta:
-                </Typography>
-                <TextField
-                  fullWidth
-                  value={answerInput}
-                  onChange={(e) => setAnswerInput(e.target.value)}
-                  placeholder="Vlož kód odpovede..."
-                  InputProps={{
-                    sx: { bgcolor: "#0f0f23" },
-                  }}
-                />
-                <Button
-                  variant="contained"
-                  color="success"
-                  onClick={processAnswer}
-                >
-                  Pripojiť
-                </Button>
-              </>
+      {!isImmersive && (
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={2}
+          sx={{ width: "100%" }}
+        >
+          <Paper
+            sx={{
+              flex: 2,
+              p: 3,
+              borderRadius: 2,
+              background: "linear-gradient(145deg, #0d1526, #0b1221)",
+              border: "1px solid rgba(255,255,255,0.05)",
+            }}
+          >
+            {role === "none" && (
+              <Stack spacing={2}>
+                <Typography variant="h6">Začni novú hru</Typography>
+                <Stack direction="row" spacing={1} flexWrap="wrap">
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    onClick={createGame}
+                    startIcon={<SportsEsportsIcon />}
+                  >
+                    Vytvoriť hru (Host)
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    color="inherit"
+                    onClick={openWebcamDialog}
+                    startIcon={<VideocamIcon />}
+                  >
+                    Odfotiť tvár
+                  </Button>
+                  <Chip
+                    label={`Rýchlosť loptičky ${ballSpeed}`}
+                    color="secondary"
+                  />
+                  {hostFaceImage && (
+                    <Chip
+                      label="Tvár pripravená"
+                      color="success"
+                      variant="outlined"
+                    />
+                  )}
+                </Stack>
+              </Stack>
             )}
-            <Button
-              variant="outlined"
-              color="secondary"
-              onClick={openWebcamDialog}
-              startIcon={<VideocamIcon />}
-            >
-              Odfotiť tvár
-            </Button>
-          </Stack>
-        )}
 
-        {role === "guest" && !connected && (
-          <Stack spacing={2}>
-            {answerCode ? (
-              <>
-                <Typography variant="body1">
-                  Pošli tento kód hostiteľovi:
-                </Typography>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={3}
-                  value={answerCode}
-                  InputProps={{
-                    readOnly: true,
-                    sx: {
-                      bgcolor: "#0f0f23",
-                      fontFamily: "monospace",
-                      fontSize: "0.7rem",
-                    },
-                  }}
-                />
-                <Button
-                  variant="contained"
-                  onClick={() => copyToClipboard(answerCode)}
-                  startIcon={<ContentCopyIcon />}
-                >
-                  Kopírovať kód
-                </Button>
+            {role === "host" && !connected && (
+              <Stack spacing={2} sx={{ mt: 1 }}>
+                {inviteLink && (
+                  <>
+                    <Typography>Pošli tento link kamarátovi:</Typography>
+                    <TextField
+                      fullWidth
+                      value={inviteLink}
+                      InputProps={{
+                        readOnly: true,
+                        sx: {
+                          bgcolor: "#050914",
+                          fontFamily: "monospace",
+                          fontSize: "0.85rem",
+                        },
+                      }}
+                    />
+                    <Stack direction="row" spacing={1}>
+                      <Button
+                        variant="contained"
+                        onClick={() => copyToClipboard(inviteLink)}
+                        startIcon={<ContentCopyIcon />}
+                      >
+                        Kopírovať link
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        color="inherit"
+                        onClick={openWebcamDialog}
+                        startIcon={<VideocamIcon />}
+                      >
+                        Odfotiť tvár
+                      </Button>
+                    </Stack>
+
+                    <Typography variant="body1" sx={{ mt: 1 }}>
+                      Vlož kód odpovede od kamaráta:
+                    </Typography>
+                    <TextField
+                      fullWidth
+                      value={answerInput}
+                      onChange={(e) => setAnswerInput(e.target.value)}
+                      placeholder="Vlož kód odpovede..."
+                      InputProps={{ sx: { bgcolor: "#050914" } }}
+                    />
+                    <Button
+                      variant="contained"
+                      color="success"
+                      onClick={processAnswer}
+                    >
+                      Pripojiť
+                    </Button>
+                  </>
+                )}
+
+                {!inviteLink && (
+                  <Typography color="rgba(255,255,255,0.7)">
+                    Klikni na Vytvoriť hru a vygeneruj odkaz.
+                  </Typography>
+                )}
+              </Stack>
+            )}
+
+            {role === "guest" && !connected && (
+              <Stack spacing={2}>
+                {answerCode ? (
+                  <>
+                    <Typography>Pošli tento kód hostiteľovi:</Typography>
+                    <TextField
+                      fullWidth
+                      multiline
+                      rows={3}
+                      value={answerCode}
+                      InputProps={{
+                        readOnly: true,
+                        sx: {
+                          bgcolor: "#050914",
+                          fontFamily: "monospace",
+                          fontSize: "0.8rem",
+                        },
+                      }}
+                    />
+                    <Stack direction="row" spacing={1}>
+                      <Button
+                        variant="contained"
+                        onClick={() => copyToClipboard(answerCode)}
+                        startIcon={<ContentCopyIcon />}
+                      >
+                        Kopírovať kód
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        color="inherit"
+                        onClick={openWebcamDialog}
+                        startIcon={<VideocamIcon />}
+                      >
+                        Odfotiť tvár
+                      </Button>
+                      {guestFaceImage && (
+                        <Chip
+                          label="Tvár pripravená"
+                          color="success"
+                          variant="outlined"
+                        />
+                      )}
+                    </Stack>
+                  </>
+                ) : (
+                  <Box textAlign="center" py={2}>
+                    <CircularProgress />
+                    <Typography sx={{ mt: 1 }}>Generujem odpoveď...</Typography>
+                  </Box>
+                )}
+              </Stack>
+            )}
+
+            {connected && (
+              <Stack spacing={2}>
+                <Alert severity="success">
+                  Pripojené! Ovládaj pálku šípkami alebo W/S.
+                </Alert>
                 <Button
                   variant="outlined"
-                  color="secondary"
+                  color="inherit"
                   onClick={openWebcamDialog}
                   startIcon={<VideocamIcon />}
                 >
-                  Odfotiť tvár
+                  Zmeniť tvár
                 </Button>
-                {guestFaceImage && (
-                  <Box textAlign="center">
-                    <Typography variant="body2" color="success.main">
-                      ✓ Tvár zachytená
-                    </Typography>
-                  </Box>
-                )}
-              </>
-            ) : (
-              <Box textAlign="center">
-                <CircularProgress />
-                <Typography sx={{ mt: 2 }}>Generujem odpoveď...</Typography>
-              </Box>
+              </Stack>
             )}
-          </Stack>
-        )}
+          </Paper>
 
-        {connected && (
-          <Stack spacing={2}>
-            <Alert severity="success">
-              Pripojené! Ovládaj pálku šípkami alebo W/S.
-            </Alert>
-            <Button
-              variant="outlined"
-              color="secondary"
-              onClick={openWebcamDialog}
-              startIcon={<VideocamIcon />}
+          <Paper
+            sx={{
+              flex: 1,
+              p: 3,
+              borderRadius: 2,
+              background: "linear-gradient(150deg, #0b1425, #0a1321)",
+              border: "1px solid rgba(255,255,255,0.05)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 2,
+            }}
+          >
+            <Typography variant="h6">Rýchlosť loptičky</Typography>
+            <Slider
+              value={ballSpeed}
+              min={3}
+              max={11}
+              step={0.5}
+              onChange={(_, value) => setBallSpeed(value as number)}
+              valueLabelDisplay="auto"
+            />
+            <Typography variant="body2" color="rgba(255,255,255,0.72)">
+              Pomalšia loptička je čitateľnejšia. Host posiela nastavenie aj
+              hosťovi.
+            </Typography>
+
+            <Typography variant="h6" sx={{ mt: 1 }}>
+              Ako hrať
+            </Typography>
+            <Typography
+              variant="body2"
+              color="rgba(255,255,255,0.72)"
+              component="div"
             >
-              Zmeniť tvár
-            </Button>
-          </Stack>
-        )}
-      </Paper>
+              <ol style={{ margin: 0, paddingLeft: 18 }}>
+                <li>Host vytvorí hru a pošle link.</li>
+                <li>Guest otvorí link, vráti kód, host ho vloží.</li>
+                <li>
+                  Prebehne krátke odpočítavanie, až potom sa hýbe loptička.
+                </li>
+                <li>Šípky alebo W/S ovládajú pálku.</li>
+              </ol>
+            </Typography>
+          </Paper>
+        </Stack>
+      )}
 
-      {/* Webcam Dialog */}
       <Dialog
         open={webcamDialogOpen}
         onClose={closeWebcamDialog}
@@ -883,7 +1139,7 @@ export default function PongGame() {
                 muted
                 style={{
                   width: "100%",
-                  maxWidth: 400,
+                  maxWidth: 420,
                   borderRadius: 8,
                   transform: "scaleX(-1)",
                 }}
@@ -903,31 +1159,12 @@ export default function PongGame() {
         </DialogActions>
       </Dialog>
 
-      {/* Snackbar */}
       <Snackbar
         open={snackbarOpen}
         autoHideDuration={3000}
         onClose={() => setSnackbarOpen(false)}
         message={snackbarMessage}
       />
-
-      {/* Instructions */}
-      <Paper
-        sx={{ p: 2, mt: 3, bgcolor: "#1a1a3e", maxWidth: 600, width: "100%" }}
-      >
-        <Typography variant="h6" gutterBottom>
-          Ako hrať
-        </Typography>
-        <Typography variant="body2" component="div">
-          <ol>
-            <li>Hostiteľ klikne na "Vytvoriť hru" a pošle link kamarátovi</li>
-            <li>Kamarát otvorí link a pošle vygenerovaný kód späť</li>
-            <li>Hostiteľ vloží kód a klikne "Pripojiť"</li>
-            <li>Ovládaj pálku šípkami ↑↓ alebo klávesmi W/S</li>
-            <li>Môžeš si odfotiť tvár a tá bude tvojou pálkou!</li>
-          </ol>
-        </Typography>
-      </Paper>
     </Box>
   );
 }
